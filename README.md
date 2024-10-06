@@ -13,11 +13,14 @@ Contains Python and C++ code
    ```sh
    git clone <repository-url>
    cd <repository-directory>
+   ```
 
 2. Check for Conda environment and create one if not present:
-    conda info --envs  # List all conda environments
-    conda create --name myenv python=3.x  # Create a new environment named 'myenv'
-    conda activate myenv  # Activate the environment
+   ```sh
+   conda info --envs  # List all conda environments
+   conda create --name myenv python=3.x  # Create a new environment named 'myenv'
+   conda activate myenv  # Activate the environment
+   ```
 
 ## Running Flask application
 1. Navigate to the directory containing the Flask application:
