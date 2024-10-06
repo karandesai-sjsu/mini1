@@ -27,9 +27,10 @@ Contains Python and C++ code
     ```sh
     cd <path-to-flask-application>
     ```
-2. Run Flask App 
+2. Run Flask App :
+    ```sh
     python file_name.py
-    
+    ```
     The application will start, and you can access it at http://127.0.0.1:5000.
 
 ## Example API Request
