@@ -24,7 +24,9 @@ Contains Python and C++ code
 
 ## Running Flask application
 1. Navigate to the directory containing the Flask application:
+    ```sh
     cd <path-to-flask-application>
+    ```
 2. Run Flask App 
     python file_name.py
     
