@@ -1,26 +1,15 @@
 import os
 import pandas as pd
-import numpy as np
-from numba import njit,prange
-from flask import Flask, request, jsonify
 import time
+from flask import Flask, request, jsonify
+from numba import njit, prange ,typed , types
+from numba.typed import List
 
 app = Flask(__name__)
 
 DATA_DIR = '../DATA\AirNow fires/fire-2020-full-data/data' 
-EXPORT_DIR = '../'
+EXPORT_DIR = '../../'
 
-@njit(parallel=True)
-def calculate_average_aqi(aqi_values):
-    total = 0.0
-    count = 0
-    for i in prange(len(aqi_values)):
-        if aqi_values[i] != -999:
-            total += aqi_values[i]
-            count += 1
-    return total / count if count > 0 else 0
-
-# function to get CSV files for a specific date range
 def get_csv_files_in_date_range(start_date, end_date):
     csv_files_by_folder = {}
     for folder_name in os.listdir(DATA_DIR):
@@ -29,7 +18,6 @@ def get_csv_files_in_date_range(start_date, end_date):
             csv_files = []
             for file in os.listdir(folder_path):
                 if file.endswith('.csv'):
-                    # Extract date from file name and check if it's in the range
                     file_date = file.split('.')[0]
                     if start_date <= file_date <= end_date:
                         csv_files.append(os.path.join(folder_path, file))
@@ -37,32 +25,54 @@ def get_csv_files_in_date_range(start_date, end_date):
                 csv_files_by_folder[folder_name] = csv_files
     return csv_files_by_folder
 
-# function to get CSV files for a specific date
-def get_csv_files_for_exact_date(date):
-    csv_files = []
-    # Check if folder name is the exact date
-    if date.isdigit():
-        folder_path = os.path.join(DATA_DIR, date)
-        if os.path.exists(folder_path):
-            # Add all CSV files from this folder
-            for file in os.listdir(folder_path):
-                if file.endswith('.csv'):
-                    csv_files.append(os.path.join(folder_path, file))
+@njit(parallel=True)
+def compute_dataframe(aqi_values, site_name_values, site_agency_values, parameter_values):
+    total_aqi = 0.0
+    count_aqi = 0
+    site_name_freq = typed.Dict.empty(key_type=types.unicode_type, value_type=types.int64)
+    site_agency_freq = typed.Dict.empty(key_type=types.unicode_type, value_type=types.int64)
+    parameter_freq = typed.Dict.empty(key_type=types.unicode_type, value_type=types.int64)
 
-    return csv_files
+    for i in prange(len(aqi_values)):
+        print(i)
+        aqi = aqi_values[i]
+        site_name = site_name_values[i]
+        site_agency = site_agency_values[i]
+        parameter = parameter_values[i]
 
-# API endpoint to process files based on the date range
+        if aqi != -999:
+            total_aqi += aqi
+            count_aqi += 1
+
+        if site_name in site_name_freq:
+            site_name_freq[site_name] += 1
+        else:
+            site_name_freq[site_name] = 1
+
+        if site_agency in site_agency_freq:
+            site_agency_freq[site_agency] += 1
+        else:
+            site_agency_freq[site_agency] = 1
+
+        if parameter in parameter_freq:
+            parameter_freq[parameter] += 1
+        else:
+            parameter_freq[parameter] = 1
+
+    avg_aqi = total_aqi / count_aqi if count_aqi > 0 else 0
+
+    return avg_aqi, site_name_freq, site_agency_freq, parameter_freq
+
 @app.route('/process_batch_csv', methods=['GET'])
 def process_batch_csv():
-    # Get the start_date and end_date from request arguments
     start_date = request.args.get('start_date')
     end_date = request.args.get('end_date')
-    
+    start_time = time.time()
+
     if not start_date or not end_date:
         return jsonify({"error": "Please provide both start_date and end_date in format YYYYMMDD"}), 400
     
     try:
-        # Get list of CSV files in the date range
         csv_files_by_folder = get_csv_files_in_date_range(start_date, end_date)
         
         if not csv_files_by_folder:
@@ -72,82 +82,63 @@ def process_batch_csv():
         
         expected_headers = [
             'Latitude', 'Longitude', 'Time', 'Parameter', 'Concentration', 
-            'Unit', 'Raw-Concentration', 'AQI', 'Category', 'Site-Name', 
-            'Site-Agency', 'AQS-ID', 'Full_AQS-ID'
+            'Unit', 'Raw-Concentration', 'AQI', 'Category', 'Site-name', 
+            'Site-agency', 'AQS-ID', 'Full_AQS-ID'
         ]
         
         for folder, csv_files in csv_files_by_folder.items():
             
             data_frames = []
             for file in csv_files:
-                df = pd.read_csv(file, header=None)
-                
-                # Log the columns to debug
-                print(f"Columns in DataFrame for file {file}: {df.columns.tolist()}")
-                
+                df = pd.read_csv(file, header=None)              
                 if len(df.columns) != len(expected_headers):
                     return jsonify({"error": f"Column length mismatch in file {file}. Expected {len(expected_headers)} columns, found {len(df.columns)} columns."}), 400
-                
                 df.columns = expected_headers
                 data_frames.append(df)
             
             combined_df = pd.concat(data_frames, ignore_index=True)
 
-            valid_aqi_df = combined_df[combined_df['AQI'] != -999]
+            combined_df['AQI'] = pd.to_numeric(combined_df['AQI'], errors='coerce')
+            combined_df['Site-name'] = combined_df['Site-name'].astype(str)
+            combined_df['Site-agency'] = combined_df['Site-agency'].astype(str)
+            combined_df['Parameter'] = combined_df['Parameter'].astype(str)
 
-            aqi_values = valid_aqi_df['AQI'].values
+            result_df = combined_df[['AQI', 'Site-name', 'Site-agency', 'Parameter']]
             
-            start_time = time.time()
-            avg_aqi = calculate_average_aqi(aqi_values)
+            aqi_values = result_df['AQI'].values.astype(float)
+            site_name_values = List([
+                str(name) if isinstance(name, str) else "unknown"
+                for name in result_df['Site-name'].values.tolist()
+            ])
+
+            site_agency_values = List([
+                str(agency) if isinstance(agency, str) else "unknown"
+                for agency in result_df['Site-agency'].values.tolist()
+            ])
+
+            parameter_values = List([
+                str(param) if isinstance(param, str) else "unknown"
+                for param in result_df['Parameter'].values.tolist()
+            ])
+            
+            avg_aqi, site_name_freq, site_agency_freq, parameter_freq = compute_dataframe(
+                aqi_values, site_name_values, site_agency_values, parameter_values
+            )
 
             end_time = time.time()
-            
-            # site_name_freq = combined_df['Site-Name'].value_counts().to_dict()
-            # site_agency_freq = combined_df['Site-Agency'].value_counts().to_dict()
-            # parameter_freq = combined_df['Parameter'].value_counts().to_dict()
-            
+                        
             folder_summaries[folder] = {
-                "time taken" : (end_time -start_time),
-                "average_AQI": avg_aqi
-                # "site_name_frequency": site_name_freq,
-                # "site_agency_frequency": site_agency_freq,
-                # "parameter_frequency": parameter_freq
+                "time taken": (end_time - start_time),
+                # "average_AQI": avg_aqi,
+                # "site_name_frequency": dict(site_name_freq),
+                # "site_agency_frequency": dict(site_agency_freq),
+                # "parameter_frequency": dict(parameter_freq)
             }
-            
-        
+                    
         return jsonify({"message": "Processed files successfully.", "summaries": folder_summaries})
-    
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    
-# API endpoint to process files based on the exact date
-@app.route('/process_csv', methods=['GET'])
-def process_csv():
-    # Get the date from request arguments
-    date = request.args.get('date')
-    
-    if not date:
-        return jsonify({"error": "Please provide the date in format YYYYMMDD"}), 400
-    
-    try:
-        # Get list of CSV files for the exact date
-        csv_files = get_csv_files_for_exact_date(date)
-        
-        if not csv_files:
-            return jsonify({"message": "No files found for the provided date."})
-        
-        # Read and process CSV files
-        data_frames = []
-        for file in csv_files:
-            df = pd.read_csv(file)
-            data_frames.append(df)
-        
-        # Further processing of data_frames can be done here
-        
-        return jsonify({"message": "Files processed successfully."})
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=False)
