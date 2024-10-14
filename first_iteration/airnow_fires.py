@@ -1,14 +1,15 @@
 import os
-import pandas as pd
-from flask import Flask, request, jsonify
 import time
+import csv
+from flask import Flask, request, jsonify
+from collections import Counter
 
 app = Flask(__name__)
 
-DATA_DIR = '../DATA\AirNow fires/fire-2020-full-data/data' 
+DATA_DIR = '../DATA/AirNow fires/fire-2020-full-data/data'
 EXPORT_DIR = '../../'
 
-#get CSV files for a specific date range
+# function to get CSV files for a specific date range
 def get_csv_files_in_date_range(start_date, end_date):
     csv_files_by_folder = {}
     for folder_name in os.listdir(DATA_DIR):
@@ -17,7 +18,6 @@ def get_csv_files_in_date_range(start_date, end_date):
             csv_files = []
             for file in os.listdir(folder_path):
                 if file.endswith('.csv'):
-                    # Extract date from file name and check if it's in the range
                     file_date = file.split('.')[0]
                     if start_date <= file_date <= end_date:
                         csv_files.append(os.path.join(folder_path, file))
@@ -25,21 +25,13 @@ def get_csv_files_in_date_range(start_date, end_date):
                 csv_files_by_folder[folder_name] = csv_files
     return csv_files_by_folder
 
-#get CSV files for a specific date
-def get_csv_files_for_exact_date(date):
-    csv_files = []
-    # Check if folder name is the exact date
-    if date.isdigit():
-        folder_path = os.path.join(DATA_DIR, date)
-        if os.path.exists(folder_path):
-            # Add all CSV files from this folder
-            for file in os.listdir(folder_path):
-                if file.endswith('.csv'):
-                    csv_files.append(os.path.join(folder_path, file))
+def read_csv_file(file_path):
+    with open(file_path, mode='r') as file:
+        csv_reader = csv.reader(file)
+        data = [row for row in csv_reader]
+    return data
 
-    return csv_files
-
-#process files based on the date range
+#endpoint to process files based on the date range
 @app.route('/process_batch_csv', methods=['GET'])
 def process_batch_csv():
     start_date = request.args.get('start_date')
@@ -63,24 +55,15 @@ def process_batch_csv():
         ]
         
         for folder, csv_files in csv_files_by_folder.items():
-            data_frames = []
+            combined_data = []
             for file in csv_files:
-                df = pd.read_csv(file, header=None)               
-                if len(df.columns) != len(expected_headers):
-                    return jsonify({"error": f"Column length mismatch in file {file}. Expected {len(expected_headers)} columns, found {len(df.columns)} columns."}), 400
-                
-                df.columns = expected_headers
-                data_frames.append(df)
+                data = read_csv_file(file)
+                if len(data[0]) != len(expected_headers):
+                    return jsonify({"error": f"Column length mismatch in file {file}. Expected {len(expected_headers)} columns, found {len(data[0])} columns."}), 400
+                combined_data.extend(data)
+        
+            result_data = [(row[7], row[9], row[10], row[3]) for row in combined_data]
             
-            combined_df = pd.concat(data_frames, ignore_index=True)
-            combined_df['AQI'] = pd.to_numeric(combined_df['AQI'], errors='coerce')
-            combined_df['Site-name'] = combined_df['Site-name'].astype(str)
-            combined_df['Site-agency'] = combined_df['Site-agency'].astype(str)
-            combined_df['Parameter'] = combined_df['Parameter'].astype(str)
-
-            result_df = combined_df[['AQI', 'Site-name', 'Site-agency', 'Parameter']]
-            
-            start_time = time.time()
             site_name_freq = {}
             site_agency_freq = {}
             parameter_freq = {}
@@ -88,15 +71,18 @@ def process_batch_csv():
             total_aqi = 0.0
             count_aqi = 0
 
-            for index, row in result_df.iterrows():
-                aqi = row['AQI']
-                site_name = row['Site-name']
-                site_agency = row['Site-agency']
-                parameter = row['Parameter']
+            for row in result_data:
+                try:
+                    aqi = int(row[0]) if row[0] != '-999' else 0
+                except ValueError:
+                    return jsonify({"error": f"Invalid AQI value: {row[0]}"}), 400
+                
+                site_name = row[1]
+                site_agency = row[2]
+                parameter = row[3]
 
-                if pd.notna(aqi) and aqi != -999:
-                    total_aqi += aqi
-                    count_aqi += 1
+                total_aqi += aqi
+                count_aqi += 1
 
                 if site_name in site_name_freq:
                     site_name_freq[site_name] += 1
@@ -115,23 +101,17 @@ def process_batch_csv():
 
             avg_aqi = total_aqi / count_aqi if count_aqi > 0 else 0
 
-            end_time = time.time()
-        
-            
             folder_summaries[folder] = {
-                "time taken" : (end_time -start_time),
-                # "average_AQI": avg_aqi,
-                # "site_name_frequency": site_name_freq,
-                # "site_agency_frequency": site_agency_freq,
-                # "parameter_frequency": parameter_freq
+                "average_AQI": avg_aqi,
+                "site_name_frequency": site_name_freq,
+                "site_agency_frequency": site_agency_freq,
+                "parameter_frequency": parameter_freq
             }
-            
         
         return jsonify({"message": "Processed files successfully.", "summaries": folder_summaries})
     
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-    
 
 if __name__ == '__main__':
     app.run(debug=True)
